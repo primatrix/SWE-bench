@@ -345,6 +345,7 @@ def call_local_server(base_url, model_name, inputs, temperature, top_p, **model_
         ],
         "temperature": temperature,
         "top_p": top_p,
+        "max_tokens": 8192,
         **model_args,
     }
     
@@ -352,7 +353,7 @@ def call_local_server(base_url, model_name, inputs, temperature, top_p, **model_
         f"{base_url}/v1/chat/completions",
         json=payload,
         headers={"Content-Type": "application/json"},
-        timeout=600,
+        timeout=1800,  # 30 minutes
     )
     response.raise_for_status()
     result = response.json()
