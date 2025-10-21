@@ -555,6 +555,13 @@ def main(
         )
     if shard_id is not None and num_shards is None:
         logger.warning(f"Received shard_id={shard_id} but num_shards is None, ignoring")
+    
+    if base_url is None and model_name_or_path not in MODEL_LIMITS:
+        raise ValueError(
+            f"Invalid model name '{model_name_or_path}'. "
+            f"Choose from {sorted(list(MODEL_LIMITS.keys()))} or use --base_url for custom models."
+        )
+    
     model_args = parse_model_args(model_args)
     model_nickname = model_name_or_path
     if "checkpoint" in Path(model_name_or_path).name:
@@ -628,8 +635,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model_name_or_path",
         type=str,
-        help="Name of API model. Update MODEL* constants in this file to add new models.",
-        choices=sorted(list(MODEL_LIMITS.keys())),
+        help="Name of API model (or any model name when using --base_url).",
     )
     parser.add_argument(
         "--shard_id",
