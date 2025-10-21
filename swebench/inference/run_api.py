@@ -14,6 +14,7 @@ from tqdm.auto import tqdm
 import numpy as np
 import tiktoken
 import openai
+import requests
 from anthropic import HUMAN_PROMPT, AI_PROMPT, Anthropic
 from tenacity import (
     retry,
@@ -320,6 +321,104 @@ def call_anthropic_v2(
         return None
 
 
+@retry(wait=wait_random_exponential(min=30, max=600), stop=stop_after_attempt(3))
+def call_local_server(base_url, model_name, inputs, temperature, top_p, **model_args):
+    """
+    Calls a local inference server HTTP API to generate completions.
+
+    Args:
+    base_url (str): The base URL of the local inference server.
+    model_name (str): The model name to use.
+    inputs (str): The inputs to generate completions for.
+    temperature (float): The temperature to use.
+    top_p (float): The top_p to use.
+    **model_args (dict): A dictionary of model arguments.
+    """
+    system_messages = inputs.split("\n", 1)[0]
+    user_message = inputs.split("\n", 1)[1]
+    
+    payload = {
+        "model": model_name,
+        "messages": [
+            {"role": "system", "content": system_messages},
+            {"role": "user", "content": user_message},
+        ],
+        "temperature": temperature,
+        "top_p": top_p,
+        **model_args,
+    }
+    
+    response = requests.post(
+        f"{base_url}/v1/chat/completions",
+        json=payload,
+        headers={"Content-Type": "application/json"},
+        timeout=600,
+    )
+    response.raise_for_status()
+    result = response.json()
+    
+    return result
+
+
+def local_server_inference(
+    test_dataset,
+    model_name_or_path,
+    output_file,
+    model_args,
+    existing_ids,
+    max_cost,
+    base_url,
+):
+    """
+    Runs inference on a dataset using a local inference server.
+
+    Args:
+    test_dataset (datasets.Dataset): The dataset to run inference on.
+    model_name_or_path (str): The name or path of the model to use.
+    output_file (str): The path to the output file.
+    model_args (dict): A dictionary of model arguments.
+    existing_ids (set): A set of ids that have already been processed.
+    max_cost (float): The maximum cost to spend on inference (ignored for local server).
+    base_url (str): The base URL of the local inference server.
+    """
+    temperature = model_args.pop("temperature", 0.2)
+    top_p = model_args.pop("top_p", 0.95 if temperature > 0 else 1)
+    print(f"Using temperature={temperature}, top_p={top_p}")
+    print(f"Using local inference server at {base_url}")
+    
+    basic_args = {
+        "model_name_or_path": model_name_or_path,
+    }
+    
+    print(f"Processing {len(test_dataset)} instances")
+    with open(output_file, "a+") as f:
+        for datum in tqdm(test_dataset, desc=f"Inference for {model_name_or_path}"):
+            instance_id = datum["instance_id"]
+            if instance_id in existing_ids:
+                continue
+            output_dict = {"instance_id": instance_id}
+            output_dict.update(basic_args)
+            output_dict["text"] = f"{datum['text']}\n\n"
+            
+            try:
+                response = call_local_server(
+                    base_url,
+                    model_name_or_path,
+                    output_dict["text"],
+                    temperature,
+                    top_p,
+                    **model_args,
+                )
+                completion = response["choices"][0]["message"]["content"]
+                output_dict["full_output"] = completion
+                output_dict["model_patch"] = extract_diff(completion)
+                print(json.dumps(output_dict), file=f, flush=True)
+            except Exception as e:
+                logger.error(f"Error processing instance {instance_id}: {e}")
+                traceback.print_exc()
+                continue
+
+
 def anthropic_inference(
     test_dataset,
     model_name_or_path,
@@ -448,6 +547,7 @@ def main(
     output_dir,
     model_args,
     max_cost,
+    base_url=None,
 ):
     if shard_id is None and num_shards is not None:
         logger.warning(
@@ -499,7 +599,10 @@ def main(
         "existing_ids": existing_ids,
         "max_cost": max_cost,
     }
-    if model_name_or_path.startswith("claude"):
+    if base_url is not None:
+        inference_args["base_url"] = base_url
+        local_server_inference(**inference_args)
+    elif model_name_or_path.startswith("claude"):
         anthropic_inference(**inference_args)
     elif model_name_or_path.startswith("gpt"):
         openai_inference(**inference_args)
@@ -558,6 +661,12 @@ if __name__ == "__main__":
         type=float,
         default=None,
         help="Maximum cost to spend on inference.",
+    )
+    parser.add_argument(
+        "--base_url",
+        type=str,
+        default=None,
+        help="Base URL of local inference server (e.g., http://localhost:8000). If provided, will use local server instead of API.",
     )
     args = parser.parse_args()
     main(**vars(args))
