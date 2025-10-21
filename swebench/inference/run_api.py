@@ -588,8 +588,12 @@ def main(
     if split not in dataset:
         raise ValueError(f"Invalid split {split} for dataset {dataset_name_or_path}")
     dataset = dataset[split]
-    lens = np.array(list(map(len, dataset["text"])))
-    dataset = dataset.select(np.argsort(lens))
+    if len(dataset) > 0:
+        lens = np.array(list(map(len, dataset["text"])))
+        dataset = dataset.select(np.argsort(lens))
+    else:
+        logger.warning("Empty dataset after filtering existing ids")
+        return
     if len(existing_ids) > 0:
         dataset = dataset.filter(
             lambda x: x["instance_id"] not in existing_ids,
